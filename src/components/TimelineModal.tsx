@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, FileText, CreditCard, Banknote, Landmark, Save, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage } from '../lib/firebase';
 import type { Franchise, TimelineEvent, ServiceType } from '../types';
 
 interface TimelineModalProps {
@@ -53,9 +55,18 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
     const [newLogContent, setNewLogContent] = useState('');
     const [newLogType, setNewLogType] = useState<'Contact' | 'Meeting' | 'File' | 'Note'>('Note');
 
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [isUploading, setIsUploading] = useState(false);
+
     useEffect(() => {
         setEditedFranchise(franchise);
-    }, [franchise]);
+        // Reset all form state when franchise changes or modal opens
+        setNewLogContent('');
+        setNewLogType('Note');
+        setSelectedFile(null);
+        setIsAddingLog(false);
+        setIsUploading(false);
+    }, [franchise, isOpen]);
 
     if (!isOpen) return null;
 
@@ -71,16 +82,46 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
         setEditedFranchise({ ...editedFranchise, serviceTypes: Array.from(current) });
     };
 
-    const handleAddLog = () => {
-        if (!newLogContent.trim()) return;
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            setSelectedFile(e.target.files[0]);
+            // Preset content name
+            setNewLogContent(`${e.target.files[0].name} 업로드 완료`);
+        }
+    };
+
+    const handleAddLog = async () => {
+        if (!newLogContent.trim() && !selectedFile) return;
+
+        let fileUrl = '';
+        let finalContent = newLogContent;
+
+        if (newLogType === 'File' && selectedFile) {
+            setIsUploading(true);
+            try {
+                const storageRef = ref(storage, `franchise-docs/${franchise.id}/${Date.now()}_${selectedFile.name}`);
+                const snapshot = await uploadBytes(storageRef, selectedFile);
+                fileUrl = await getDownloadURL(snapshot.ref);
+                finalContent = `${selectedFile.name}`;
+            } catch (error: any) {
+                console.error("Upload failed", error);
+                const errorMessage = error.code === 'storage/unauthorized'
+                    ? "업로드 권한이 없습니다. Firebase Console에서 Storage 규칙을 확인해주세요."
+                    : `파일 업로드 실패: ${error.message}`;
+                alert(errorMessage);
+                setIsUploading(false);
+                return;
+            }
+            setIsUploading(false);
+        }
 
         const newEvent: TimelineEvent = {
             id: Date.now().toString(),
             date: new Date().toISOString().split('T')[0],
             type: newLogType,
-            content: newLogContent,
-            createdBy: 'Me', // Replace with actual user context if available
-            files: []
+            content: finalContent,
+            createdBy: 'Me',
+            files: fileUrl ? [fileUrl] : []
         };
 
         const updatedHistory = [newEvent, ...editedFranchise.history];
@@ -91,6 +132,7 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
 
         // Reset form
         setNewLogContent('');
+        setSelectedFile(null);
         setIsAddingLog(false);
     };
 
@@ -267,7 +309,7 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
 
                                 {isAddingLog && (
                                     <div className="p-4 bg-blue-50/30 border-b border-blue-100 animate-in slide-in-from-top-2">
-                                        <div className="flex gap-2 mb-2">
+                                        <div className="flex gap-2 mb-2 items-center">
                                             <select
                                                 value={newLogType}
                                                 onChange={(e: any) => setNewLogType(e.target.value)}
@@ -278,21 +320,39 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
                                                 <option value="Contact">연락 (Contact)</option>
                                                 <option value="File">파일 (File)</option>
                                             </select>
-                                            <input
-                                                type="text"
-                                                value={newLogContent}
-                                                onChange={(e) => setNewLogContent(e.target.value)}
-                                                placeholder="내용을 입력하세요..."
-                                                className="flex-1 text-sm border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-ibk-blue"
-                                                onKeyDown={(e) => e.key === 'Enter' && handleAddLog()}
-                                            />
+
+                                            {newLogType === 'File' ? (
+                                                <input
+                                                    type="file"
+                                                    onChange={handleFileSelect}
+                                                    className="flex-1 text-xs border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-ibk-blue bg-white"
+                                                />
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    value={newLogContent}
+                                                    onChange={(e) => setNewLogContent(e.target.value)}
+                                                    placeholder="내용을 입력하세요..."
+                                                    className="flex-1 text-sm border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-ibk-blue"
+                                                    onKeyDown={(e) => e.key === 'Enter' && handleAddLog()}
+                                                />
+                                            )}
+
                                             <button
                                                 onClick={handleAddLog}
-                                                className="bg-ibk-blue text-white px-3 py-1.5 rounded text-xs font-bold"
+                                                disabled={isUploading}
+                                                className={`bg-ibk-blue text-white px-3 py-1.5 rounded text-xs font-bold ${isUploading ? 'opacity-50 cursor-not-allowed' : ''
+                                                    }`}
                                             >
-                                                등록
+                                                {isUploading ? '업로드 중...' : '등록'}
                                             </button>
                                         </div>
+                                        {/* File Input Help Text */}
+                                        {newLogType === 'File' && (
+                                            <p className="text-[10px] text-slate-400 pl-1 mt-1">
+                                                * 파일을 선택 후 '등록'을 누르면 자동으로 업로드됩니다.
+                                            </p>
+                                        )}
                                     </div>
                                 )}
 
@@ -332,10 +392,18 @@ export const TimelineModal: React.FC<TimelineModalProps> = ({
                                                             {event.content}
                                                             {event.files && event.files.length > 0 && (
                                                                 <div className="flex gap-1 mt-1">
-                                                                    {event.files.map((_, i) => (
-                                                                        <span key={i} className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 flex items-center gap-1">
-                                                                            <FileText className="w-3 h-3" /> 파일 첨부됨
-                                                                        </span>
+                                                                    {event.files.map((url, i) => (
+                                                                        <a
+                                                                            key={i}
+                                                                            href={url}
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-500 flex items-center gap-1 hover:bg-ibk-blue/10 hover:text-ibk-blue transition-colors"
+                                                                        >
+                                                                            <FileText className="w-3 h-3" />
+                                                                            {/* If URL contains encoded char like %20, straightforward; ideally we store name separately but this works for MVP */}
+                                                                            파일 열기
+                                                                        </a>
                                                                     ))}
                                                                 </div>
                                                             )}
